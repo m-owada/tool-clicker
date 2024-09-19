@@ -263,7 +263,19 @@ class MainForm : Form
     
     private void SetToolStripStatusLabel2()
     {
-        toolStripStatusLabel2.Text = TimeSpan.FromMilliseconds(Decimal.ToDouble(numericUpDown1.Value)).ToString(@"hh\:mm\:ss\.fff");
+        SetToolStripStatusLabel2(TimeSpan.Zero);
+    }
+    
+    private void SetToolStripStatusLabel2(TimeSpan timeSpan)
+    {
+        if(timeSpan > TimeSpan.Zero)
+        {
+            toolStripStatusLabel2.Text = timeSpan.ToString(@"hh\:mm\:ss\.fff");
+        }
+        else
+        {
+            toolStripStatusLabel2.Text = TimeSpan.FromMilliseconds(Decimal.ToDouble(numericUpDown1.Value)).ToString(@"hh\:mm\:ss\.fff");
+        }
     }
     
     private void TimerStart()
@@ -271,6 +283,23 @@ class MainForm : Form
         timer.Start(decimal.ToDouble(numericUpDown1.Value));
         clickCount = 0;
         SetToolStripStatusLabel1();
+        TimerDisplay();
+    }
+    
+    private async void TimerDisplay()
+    {
+        var config = new Config();
+        if(config.Display)
+        {
+            await Task.Run(() =>
+            {
+                while(timer.Enabled)
+                {
+                    SetToolStripStatusLabel2(timer.GetTimeSpan());
+                    Thread.Sleep(1);
+                }
+            });
+        }
     }
     
     private void TimerStop()
@@ -280,6 +309,7 @@ class MainForm : Form
         keyHook.Stop();
         AllEnabled(true);
         toolStripStatusLabel1.Text = "操作内容を設定して" + button1.Text + "ボタンをクリックしてください。";
+        SetToolStripStatusLabel2();
     }
     
     private bool IsMouseClick(MouseButtons button)
@@ -325,6 +355,7 @@ class Config
     public decimal Interval { get; set; }
     public int Cancel { get; set; }
     public bool TopMost { get; set; }
+    public bool Display { get; set; }
     
     public Config()
     {
@@ -340,6 +371,7 @@ class Config
         Interval = GetValue(xml, "interval", 1000.0M);
         Cancel = GetValue(xml, "cancel", 0);
         TopMost = GetValue(xml, "topmost", true);
+        Display = GetValue(xml, "display", true);
     }
     
     public void Save()
@@ -351,6 +383,7 @@ class Config
         SetValue(xml, "interval", Interval);
         SetValue(xml, "cancel", Cancel);
         SetValue(xml, "topmost", TopMost);
+        SetValue(xml, "display", Display);
         xml.Save(FileName);
     }
     
@@ -370,7 +403,8 @@ class Config
                     new XElement("operation", "0"),
                     new XElement("interval", "1000.0"),
                     new XElement("cancel", "0"),
-                    new XElement("topmost", "True")
+                    new XElement("topmost", "True"),
+                    new XElement("display", "True")
                 )
             );
             xml.Save(FileName);
@@ -438,8 +472,11 @@ class Config
 
 class CustomTimer : IDisposable
 {
+    public double Interval { get; private set; }
     public bool Enabled { get; private set; }
     public event EventHandler Tick;
+    private DateTime nextAt = new DateTime();
+    private CancellationTokenSource tokenSource;
     
     public CustomTimer()
     {
@@ -448,32 +485,40 @@ class CustomTimer : IDisposable
     
     public void Start(double interval)
     {
+        Interval = interval;
         Enabled = true;
-        var nextAt = DateTime.Now.AddMilliseconds(interval);
-        Task.Run(() =>
+        nextAt = DateTime.Now.AddMilliseconds(Interval);
+        tokenSource = new CancellationTokenSource();
+        Task.Run(() => Ticktack(tokenSource.Token));
+    }
+    
+    private void Ticktack(CancellationToken token)
+    {
+        while(Enabled)
         {
-            while(Enabled)
+            while(true)
             {
-                while(true)
+                var rest = (nextAt - DateTime.Now).TotalMilliseconds;
+                if(rest > 16)
                 {
-                    var rest = (nextAt - DateTime.Now).TotalMilliseconds;
-                    if(rest > 16)
-                    {
-                        Thread.Sleep((int)(rest - 16));
-                    }
-                    else if(rest > 0)
-                    {
-                        Thread.SpinWait(50);
-                    }
-                    else
-                    {
-                        break;
-                    }
+                    Thread.Sleep((int)(rest - 16));
                 }
-                OnTickEvent();
-                nextAt = nextAt.AddMilliseconds(interval);
+                else if(rest > 0)
+                {
+                    Thread.SpinWait(50);
+                }
+                else
+                {
+                    break;
+                }
             }
-        });
+            if(token.IsCancellationRequested)
+            {
+                return;
+            }
+            OnTickEvent();
+            nextAt = nextAt.AddMilliseconds(Interval);
+        }
     }
     
     protected void OnTickEvent()
@@ -484,9 +529,26 @@ class CustomTimer : IDisposable
         }
     }
     
+    public TimeSpan GetTimeSpan()
+    {
+        if(Enabled)
+        {
+            if(nextAt > DateTime.Now)
+            {
+                return (nextAt - DateTime.Now);
+            }
+        }
+        return TimeSpan.Zero;
+    }
+    
     public void Stop()
     {
+        Interval = 0d;
         Enabled = false;
+        if(tokenSource != null)
+        {
+            tokenSource.Cancel();
+        }
     }
     
     public void Dispose()
